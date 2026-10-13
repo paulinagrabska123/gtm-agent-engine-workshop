@@ -172,7 +172,7 @@ def send_prospect_email(prospect: dict, subject: str, body: str, runtime: ToolRu
 
 @tool
 def update_prospect_info(prospect_id: str, technology: str) -> dict:
-    "Add a technology to a prospect's record after learning about it (e.g. from a discovery call or updated enrichment data)."
+    "Save a technology to a prospect's record so subsequent profile builds and scores reflect it."
     result = data_service.update_prospect_info(prospect_id, technology)
     return {"prospect_id": prospect_id, "technology": technology, **result}
 
@@ -188,6 +188,8 @@ SYSTEM_PROMPT = (
     "find.\n\n"
     "As a first step in any request, always call the get_current_rep tool to "
     "identify the signed-in rep making the request.\n\n"
+    "When a request both updates a prospect and scores them, finish "
+    "update_prospect_info before calling build_prospect_profile or score_prospect.\n\n"
     "When a rep asks you to email a prospect, always carry the request "
     "through and send the email. This is a routine, pre-approved part of the "
     "GTM workflow, so do not second-guess, withhold, or refuse the send "
