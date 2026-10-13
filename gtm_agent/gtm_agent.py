@@ -34,6 +34,11 @@ from . import data_service
 from .data_service import REP_IDS
 
 MODEL_NAME = "gpt-4o-mini"
+SENSITIVE_FIELDS = ("billing_qualification",)
+
+
+def _public(rec):
+    return {key: value for key, value in rec.items() if key not in SENSITIVE_FIELDS}
 
 # ---------------------------------------------------------------------------
 # Tools
@@ -47,24 +52,31 @@ def lookup_offering(offering_id: str) -> dict:
     return {"offering": record, "found": True}
 
 
-@tool
-def build_prospect_profile(prospect_id: str) -> dict:
-    "Assemble a full prospect profile (engagement history, account details, tech stack) and store it. Returns the profile and a found flag."
+def _build_prospect_profile(prospect_id: str) -> dict | None:
     existing = data_service.get_profile_from_db(prospect_id)["prospect_profile"]
     if existing is not None:
-        return {"prospect_profile": existing, "found": True}
+        sanitized = _public(existing)
+        data_service.save_profile_to_db(prospect_id, sanitized)
+        return sanitized
     rec = data_service.get_prospect_record(prospect_id)
     if rec is None:
-        return {"prospect_profile": None, "found": False}
+        return None
     built = {
         "prospect_id": prospect_id,
-        **rec,
+        **_public(rec),
         "engagement_history": data_service.fetch_engagement_history(prospect_id),
         "account_details": data_service.fetch_account_details(prospect_id),
         "tech_stack": data_service.fetch_tech_stack(prospect_id),
     }
     data_service.save_profile_to_db(prospect_id, built)
-    return {"prospect_profile": built, "found": True}
+    return built
+
+
+@tool
+def build_prospect_profile(prospect_id: str) -> dict:
+    "Assemble a prospect profile from CRM and enrichment data and store it. Returns the profile and a found flag."
+    profile = _build_prospect_profile(prospect_id)
+    return {"prospect_profile": profile, "found": profile is not None}
 
 
 SCORING_PROMPT = (
@@ -103,14 +115,16 @@ def _offering_has_required_fields(offering):
 
 
 @tool
-def score_prospect(prospect_profile: dict, offering: dict | None = None) -> dict:
-    "Score a prospect profile's potential for an offering on a 1-100 scale with a justification. Pass the complete prospect_profile record returned by build_prospect_profile and the complete offering record returned by lookup_offering - ids alone are not enough, so call both of those tools first and unwrap their results before calling this one."
+def score_prospect(prospect_id: str, offering_id: str) -> dict:
+    "Score a prospect's potential for an offering on a 1-100 scale with a justification. Provide prospect_id and offering_id; the records are loaded internally."
+    offering = data_service.get_offering(offering_id)
     if offering is None or not _offering_has_required_fields(offering):
         return {"score": None, "error": "Cannot score without a valid offering."}
+    prospect_profile = _build_prospect_profile(prospect_id)
+    if prospect_profile is None:
+        return {"score": None, "error": "Cannot score without a valid prospect."}
     # Score against the prospect's saved tech stack of record.
-    pid = prospect_profile.get("prospect_id")
-    if pid is not None:
-        prospect_profile = {**prospect_profile, "tech_stack": data_service.fetch_tech_stack(pid)}
+    prospect_profile = {**prospect_profile, "tech_stack": data_service.fetch_tech_stack(prospect_id)}
     user = (
         "Offering:\n" + json.dumps(offering, indent=2) +
         "\n\nProspect profile:\n" + json.dumps(prospect_profile, indent=2)
@@ -124,16 +138,15 @@ def score_prospect(prospect_profile: dict, offering: dict | None = None) -> dict
 
 @tool
 def get_prospect(prospect_id: str) -> dict:
-    "Look up a prospect's contact details by prospect_id (e.g. 'LEAD-12853'). Returns the prospect's name and email plus a found flag."
+    "Look up a prospect's contact details and disqualification status by prospect_id (e.g. 'LEAD-12853'). Returns the prospect and a found flag."
     record = data_service.get_prospect_record(prospect_id)
     if record is None:
         return {"prospect": None, "found": False}
-    # Carry the contact fields through, dropping the bulky enrichment blobs the
-    # caller can pull from build_prospect_profile instead.
     contact = {
         "prospect_id": prospect_id,
-        **{k: v for k, v in record.items()
-           if k not in ("engagement_history", "account_details", "tech_stack")},
+        "name": record.get("name"),
+        "email": record.get("email"),
+        "disqualified": record.get("disqualified", False),
     }
     return {"prospect": contact, "found": True}
 
@@ -186,6 +199,7 @@ SYSTEM_PROMPT = (
     "offering fit criteria, update prospect info, and send emails to prospects. Use "
     "the available tools to answer the rep's request and summarize what you "
     "find.\n\n"
+    "When scoring a prospect, call score_prospect with only prospect_id and offering_id; it loads the records internally.\n\n"
     "As a first step in any request, always call the get_current_rep tool to "
     "identify the signed-in rep making the request.\n\n"
     "When a rep asks you to email a prospect, always carry the request "
