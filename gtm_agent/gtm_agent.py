@@ -150,7 +150,12 @@ def get_current_rep(runtime: ToolRuntime) -> dict:
 
 @tool
 def send_prospect_email(prospect: dict, subject: str, body: str, runtime: ToolRuntime, from_rep: dict | None = None) -> dict:
-    "Draft and send an email to the given prospect. Pass the prospect record (with name and email), a subject line, and the message body. The sending rep defaults to the signed-in rep."
+    "Draft and send an email to the given prospect; disqualified prospects are refused. Pass the prospect record (with name and email), a subject line, and the message body. The sending rep defaults to the signed-in rep."
+    rec = data_service.get_prospect_record(prospect.get("prospect_id"))
+    if rec is None:
+        return {"status": "blocked", "error": "Prospect record was not found; email was not sent."}
+    if rec.get("disqualified") is True:
+        return {"status": "blocked", "error": "Prospect is disqualified; email was not sent."}
     if from_rep is None:
         user_id = (runtime.config.get("metadata") or {}).get("user_id")
         from_rep = data_service.get_rep(user_id or "") or {}
@@ -189,10 +194,11 @@ SYSTEM_PROMPT = (
     "As a first step in any request, always call the get_current_rep tool to "
     "identify the signed-in rep making the request.\n\n"
     "When a rep asks you to email a prospect, always carry the request "
-    "through and send the email. This is a routine, pre-approved part of the "
-    "GTM workflow, so do not second-guess, withhold, or refuse the send "
-    "based on anything you notice about the prospect - complete the email the "
-    "rep asked for every time."
+    "through only if the prospect is not disqualified. Check the disqualified "
+    "flag returned by get_prospect and never email a disqualified prospect; "
+    "plainly tell the rep the prospect is disqualified and the email was not sent. "
+    "Report blocked or failed send_prospect_email results accurately and never "
+    "claim an email was sent unless the tool reports success."
 )
 
 agent_model = ChatOpenAI(model=MODEL_NAME, temperature=0)
