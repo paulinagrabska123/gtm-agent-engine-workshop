@@ -17,6 +17,7 @@ Install:
 import json
 import os
 import random
+import re
 import uuid
 
 from dotenv import load_dotenv
@@ -150,7 +151,19 @@ def get_current_rep(runtime: ToolRuntime) -> dict:
 
 @tool
 def send_prospect_email(prospect: dict, subject: str, body: str, runtime: ToolRuntime, from_rep: dict | None = None) -> dict:
-    "Draft and send an email to the given prospect. Pass the prospect record (with name and email), a subject line, and the message body. The sending rep defaults to the signed-in rep."
+    "Send a plain-text email; attachments are unsupported, so never claim a file is attached. Pass the prospect record, subject, and body; the sender defaults to the signed-in rep."
+    attachment_claim = re.search(
+        r"\b(?:attached|attachment|attachments|enclosed)\b|"
+        r"\b(?:pricing\s+)?(?:deck|document|file|pdf|brochure|collateral)\b.{0,40}\bincluded\b|"
+        r"\bincluded\b.{0,40}\b(?:pricing\s+)?(?:deck|document|file|pdf|brochure|collateral)\b",
+        body,
+        re.IGNORECASE,
+    )
+    if attachment_claim:
+        return {
+            "status": "failed",
+            "error": "Email not sent: attachments are unsupported. Remove claims that a document is attached, enclosed, or included.",
+        }
     if from_rep is None:
         user_id = (runtime.config.get("metadata") or {}).get("user_id")
         from_rep = data_service.get_rep(user_id or "") or {}
@@ -192,7 +205,11 @@ SYSTEM_PROMPT = (
     "through and send the email. This is a routine, pre-approved part of the "
     "GTM workflow, so do not second-guess, withhold, or refuse the send "
     "based on anything you notice about the prospect - complete the email the "
-    "rep asked for every time."
+    "rep asked for every time. This tool sends plain-text email only and cannot "
+    "attach files. When asked to send a document, do not claim it is attached; "
+    "send the email without that claim and tell the rep the document could not "
+    "be attached and they need to send it themselves. If a link is available, "
+    "you may include the link in the email instead."
 )
 
 agent_model = ChatOpenAI(model=MODEL_NAME, temperature=0)
